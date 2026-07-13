@@ -49,6 +49,19 @@ def test_engine_run_stops_after_iterations():
     assert len(calls) <= 3
 
 
+def test_engine_writes_heartbeat(tmp_path):
+    candles = synthetic(n=60, seed=9)
+    pf = Portfolio(cash=1000.0)
+    broker = PaperBroker(pf)
+    strat = strategies.build("sma_crossover", fast=5, slow=20)
+    hb = tmp_path / "heartbeat"
+    engine = TradingEngine(lambda: candles, strat, broker, symbol="BTC-USD", heartbeat_path=str(hb))
+    engine.step()
+    assert hb.exists()
+    # Heartbeat is a unix timestamp.
+    assert int(hb.read_text().strip()) > 0
+
+
 def test_engine_state_restore(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({

@@ -92,6 +92,30 @@ Backtest: sma_crossover on BTC-USD
 Always read `Strategy return` **against** `Buy & hold`. Beating a rising market
 is much harder than it looks.
 
+## Run it 24/7 on a VPS
+
+Paper trading is only useful if it runs continuously, so there's a full
+deployment kit in [`deploy/`](deploy/README.md):
+
+- **`deploy/bootstrap.sh`** — one command to harden a fresh Ubuntu/Debian VPS
+  (non-root user, UFW firewall, fail2ban, automatic security updates, time
+  sync, swap) and install the bot as a systemd service.
+- **`Dockerfile` + `docker-compose.yml`** — containerized alternative with
+  auto-restart, log rotation, memory cap, and a heartbeat healthcheck.
+- **Monitoring** — a `state/heartbeat` file + `apocalyptbot health` command,
+  plus optional Telegram/Discord/Slack alerts on startup, every fill, and errors.
+
+```bash
+# on the VPS, as root:
+git clone <your-repo-url> /opt/apocalyptbot && cd /opt/apocalyptbot
+./deploy/bootstrap.sh
+nano .env            # pick strategy + add alert tokens
+systemctl start apocalyptbot
+```
+
+See [`deploy/README.md`](deploy/README.md) for the full runbook and security
+checklist. **Run in paper mode for ~2 weeks before considering real money.**
+
 ## Strategies
 
 | Name            | Idea                                              | Key params |

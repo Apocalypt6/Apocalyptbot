@@ -1,0 +1,45 @@
+# systemd unit for running Apocalyptbot 24/7 without Docker.
+#
+# Install (as root):
+#   cp deploy/systemd/apocalyptbot.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now apocalyptbot
+#   journalctl -u apocalyptbot -f      # follow logs
+#
+# Assumes the repo lives at /opt/apocalyptbot with a venv at .venv and a .env
+# file present (see deploy/bootstrap.sh, which sets this up for you).
+
+[Unit]
+Description=Apocalyptbot crypto paper-trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=apocalypt
+Group=apocalypt
+WorkingDirectory=/opt/apocalyptbot
+EnvironmentFile=/opt/apocalyptbot/.env
+ExecStart=/opt/apocalyptbot/deploy/run.sh
+Restart=on-failure
+RestartSec=10
+
+# --- sandboxing / hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/apocalyptbot/state /opt/apocalyptbot/logs /opt/apocalyptbot/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+# Cap memory so a runaway process can't take down the box.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+import time
 from typing import Any, Dict, List
 
 from . import __version__, strategies
@@ -19,6 +21,7 @@ from .broker import PaperBroker
 from .config import Config
 from .data import CoinbaseData, DataError, load_csv, save_csv, synthetic
 from .engine import TradingEngine
+from .notify import Notifier
 from .portfolio import Portfolio
 
 _PERIODS_PER_YEAR = {"1m": 525600, "5m": 105120, "15m": 35040, "1h": 8760, "6h": 1460, "1d": 365}
@@ -113,7 +116,18 @@ def cmd_paper(args) -> int:
     def fetch():
         return client.candles(args.symbol, interval=args.interval, limit=args.limit)
 
-    engine = TradingEngine(fetch, strategy, broker, symbol=args.symbol, state_path=args.state)
+    notifier = Notifier.from_env()
+    if notifier.enabled:
+        logging.getLogger("apocalyptbot").info("notifications enabled")
+    engine = TradingEngine(
+        fetch,
+        strategy,
+        broker,
+        symbol=args.symbol,
+        state_path=args.state,
+        notifier=notifier,
+        heartbeat_path=args.heartbeat,
+    )
     if not args.fresh:
         engine.load_state()
 
@@ -121,6 +135,26 @@ def cmd_paper(args) -> int:
         engine.step()
     else:
         engine.run(poll_seconds=args.poll, max_iterations=args.iterations)
+    return 0
+
+
+def cmd_health(args) -> int:
+    """Exit 0 if the heartbeat file is fresh, non-zero otherwise (for healthchecks)."""
+    path = args.heartbeat
+    if not os.path.exists(path):
+        print(f"unhealthy: no heartbeat file at {path}", file=sys.stderr)
+        return 1
+    try:
+        with open(path) as fh:
+            ts = int(fh.read().strip())
+    except (ValueError, OSError) as exc:
+        print(f"unhealthy: cannot read heartbeat: {exc}", file=sys.stderr)
+        return 1
+    age = time.time() - ts
+    if age > args.max_age:
+        print(f"unhealthy: heartbeat is {age:.0f}s old (max {args.max_age}s)", file=sys.stderr)
+        return 1
+    print(f"healthy: heartbeat is {age:.0f}s old")
     return 0
 
 
@@ -164,8 +198,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp_paper.add_argument("--iterations", type=int, default=None, help="stop after N cycles")
     sp_paper.add_argument("--once", action="store_true", help="run a single cycle and exit")
     sp_paper.add_argument("--state", default="state/portfolio.state.json", help="portfolio state file")
+    sp_paper.add_argument("--heartbeat", default="state/heartbeat", help="heartbeat file for healthchecks")
     sp_paper.add_argument("--fresh", action="store_true", help="ignore any saved state")
     sp_paper.set_defaults(func=cmd_paper)
+
+    sp_health = sub.add_parser("health", help="check the bot's heartbeat freshness (for monitoring)")
+    sp_health.add_argument("--heartbeat", default="state/heartbeat", help="heartbeat file to check")
+    sp_health.add_argument("--max-age", type=float, default=900.0, help="max heartbeat age in seconds")
+    sp_health.set_defaults(func=cmd_health)
 
     return p
 

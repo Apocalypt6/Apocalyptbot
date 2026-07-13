@@ -1,0 +1,25 @@
+# Run Apocalyptbot 24/7 on a VPS with Docker Compose.
+#
+#   cp .env.example .env      # then edit .env
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+services:
+  apocalyptbot:
+    build: .
+    image: apocalyptbot:latest
+    container_name: apocalyptbot
+    restart: unless-stopped          # survive crashes and host reboots
+    env_file: .env
+    volumes:
+      - ./state:/app/state           # portfolio + heartbeat persist across restarts
+      - ./logs:/app/logs
+      - ./data:/app/data
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

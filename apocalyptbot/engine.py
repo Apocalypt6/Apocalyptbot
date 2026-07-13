@@ -17,6 +17,7 @@ from typing import Callable, List, Optional
 
 from .broker import Fill, PaperBroker
 from .data import Candle
+from .notify import Notifier
 from .portfolio import Portfolio
 from .strategies.base import Signal, Strategy
 
@@ -33,6 +34,8 @@ class TradingEngine:
         broker: PaperBroker,
         symbol: str,
         state_path: Optional[str] = None,
+        notifier: Optional[Notifier] = None,
+        heartbeat_path: Optional[str] = None,
     ):
         """``data_fetch`` returns the latest candles (oldest-first) on each call."""
         self.data_fetch = data_fetch
@@ -40,6 +43,8 @@ class TradingEngine:
         self.broker = broker
         self.symbol = symbol
         self.state_path = state_path
+        self.notifier = notifier
+        self.heartbeat_path = heartbeat_path
 
     @property
     def portfolio(self) -> Portfolio:
@@ -67,20 +72,27 @@ class TradingEngine:
         if fill:
             logger.info("FILL %s", fill)
             self.save_state()
+            if self.notifier:
+                self.notifier.notify_fill(fill)
         equity = self.portfolio.equity({self.symbol: price})
         logger.info("equity=%.2f cash=%.2f position=%.8f", equity, self.portfolio.cash, self.portfolio.quantity(self.symbol))
+        self._write_heartbeat()
         return fill
 
     def run(self, poll_seconds: float, max_iterations: Optional[int] = None, sleep: Callable[[float], None] = time.sleep) -> None:
         """Poll-and-trade loop. ``max_iterations=None`` runs until interrupted."""
         logger.info("engine start: %s on %s, polling every %ss", self.strategy.name, self.symbol, poll_seconds)
+        if self.notifier:
+            self.notifier.send(f"🟢 Apocalyptbot started: {self.strategy.name} on {self.symbol}")
         count = 0
         try:
             while max_iterations is None or count < max_iterations:
                 try:
                     self.step()
-                except Exception:  # noqa: BLE001 - keep the loop alive on transient errors
+                except Exception as exc:  # noqa: BLE001 - keep the loop alive on transient errors
                     logger.exception("step failed; will retry next cycle")
+                    if self.notifier:
+                        self.notifier.notify_error("step", exc)
                 count += 1
                 if max_iterations is not None and count >= max_iterations:
                     break
@@ -89,7 +101,19 @@ class TradingEngine:
             logger.info("interrupted; saving state and exiting")
             self.save_state()
 
-    # --- persistence -------------------------------------------------------
+    # --- health & persistence ---------------------------------------------
+
+    def _write_heartbeat(self) -> None:
+        """Touch the heartbeat file with the current unix time (for healthchecks)."""
+        if not self.heartbeat_path:
+            return
+        try:
+            parent = os.path.dirname(os.path.abspath(self.heartbeat_path))
+            os.makedirs(parent, exist_ok=True)
+            with open(self.heartbeat_path, "w") as fh:
+                fh.write(str(int(time.time())))
+        except OSError:
+            logger.warning("could not write heartbeat to %s", self.heartbeat_path, exc_info=True)
 
     def save_state(self) -> None:
         if not self.state_path:
