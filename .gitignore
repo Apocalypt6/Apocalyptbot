@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test / tooling
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Bot runtime artifacts
+*.state.json
+state/
+data/*.csv
+!data/.gitkeep
+logs/
+*.log
+
+# Secrets — NEVER commit real API keys
+.env
+config.json
+secrets.*
+
+# OS
+.DS_Store

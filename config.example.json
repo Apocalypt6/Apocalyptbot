@@ -1,0 +1,15 @@
+{
+  "symbol": "BTC-USD",
+  "interval": "1h",
+  "exchange": "coinbase",
+
+  "starting_cash": 10000.0,
+  "fee_rate": 0.005,
+  "slippage": 0.0005,
+
+  "strategy": "sma_crossover",
+  "strategy_params": { "fast": 10, "slow": 30, "allocation": 1.0 },
+
+  "poll_seconds": 3600.0,
+  "state_path": "state/portfolio.state.json"
+}
