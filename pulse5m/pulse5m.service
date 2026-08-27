@@ -1,0 +1,19 @@
+[Unit]
+Description=Pulse 5M Polymarket worker
+After=network-online.target chrony.service systemd-timesyncd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pulse5m
+Group=pulse5m
+WorkingDirectory=/opt/pulse5m
+EnvironmentFile=-/etc/pulse5m.env
+ExecStart=/opt/pulse5m/.venv/bin/python -u /opt/pulse5m/bot.py --paper --port 8080
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

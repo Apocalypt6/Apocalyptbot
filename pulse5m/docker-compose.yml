@@ -1,0 +1,17 @@
+services:
+  pulse5m:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./config.example.env
+    environment:
+      PULSE_DATA: /data
+      PULSE_MODE: paper
+    volumes:
+      - pulse-data:/data
+    command: ["python", "-u", "bot.py", "--paper", "--port", "8080"]
+
+volumes:
+  pulse-data:

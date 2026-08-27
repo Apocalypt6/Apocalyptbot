@@ -1,210 +1,68 @@
 # Apocalyptbot
 
-A small, honest crypto trading bot. It **paper-trades** (simulated money) and
-**backtests** pluggable strategies against public market data, so you can test
-ideas safely before risking a single real dollar.
+Two bots live in this repo.
 
-> **Read this first.** A bot does not "make money" on its own — it automates a
-> strategy you'd otherwise run by hand. Whether it wins or loses comes down to
-> the strategy, and most simple strategies barely beat buy-and-hold after fees.
-> This tool is built to help you *find that out cheaply*, in simulation, rather
-> than learn it with real money. Nothing here is financial advice, and no
-> strategy is guaranteed to be profitable. **Never trade money you can't afford
-> to lose.**
+1. **Pulse 5M** (`pulse5m/`) — Polymarket 5-minute crypto Up/Down worker (BTC, ETH, SOL, XRP). This is the one you deploy on the new VPS.
+2. **Coinbase paper bot** (`apocalyptbot/`) — older SMA / RSI / DCA simulator. Leave it alone unless you want that.
 
-## What it does today
+Paper is the default. No private keys belong in this repository.
 
-- **Backtesting** — replay a strategy over historical candles with no
-  lookahead, and score it: return, max drawdown, rough Sharpe, trade count,
-  win rate, fees paid, and a **buy-and-hold** comparison.
-- **Paper trading** — run the same strategy live against real prices with
-  simulated cash; state is saved to disk so you can stop and resume.
-- **Public data** — Coinbase's public API (no account or API key needed), plus
-  offline CSV and a deterministic synthetic generator for demos/tests.
-- **Three strategies out of the box** — DCA, SMA crossover, RSI mean-reversion.
+---
 
-It does **not** place real orders yet. Live trading is a deliberate, separate
-step (see [Roadmap](#roadmap)).
+## Pulse 5M — deploy on the VPS
 
-## Install
+```bash
+git clone https://github.com/Apocalypt6/Apocalyptbot.git
+cd Apocalyptbot/pulse5m
+sudo bash deploy.sh
+curl -s localhost:8080/health
+journalctl -u pulse5m -f
+```
+
+That installs chrony, a venv, user `pulse5m`, and a systemd unit in **paper**.
+
+Prove the feeds:
+
+```bash
+sudo -u pulse5m /opt/pulse5m/.venv/bin/python /opt/pulse5m/bot.py --selftest
+sudo -u pulse5m /opt/pulse5m/.venv/bin/python /opt/pulse5m/bot.py --check
+sudo -u pulse5m /opt/pulse5m/.venv/bin/python /opt/pulse5m/bot.py --probe
+```
+
+`--check` must show `lookback=60` on all four slugs. `--probe` must print twap+raw for BTC, ETH, SOL, and XRP. If only BTC ticks, RTDS got a symbol filter — do not add filters.
+
+### Cursor on the VPS
+
+1. Remote-SSH into the box.
+2. `git clone https://github.com/Apocalypt6/Apocalyptbot.git && cd Apocalyptbot`
+3. Open that folder.
+4. Paste the prompt in [`CURSOR.md`](CURSOR.md) into Cursor Agent.
+
+Full operator notes: [`pulse5m/DEPLOY.txt`](pulse5m/DEPLOY.txt) and [`pulse5m/MATH.md`](pulse5m/MATH.md).
+
+### What Pulse 5M actually trades
+
+Settlement after 14 Aug 2026 is Chainlink **60s TWAP at close vs 60s TWAP at open**. Strike is the first official TWAP tick at/after the 5-minute open (lag ≤ 3s). Miss it, skip the window. Never invent a strike.
+
+Lock (default), last 60 seconds:
+
+```
+proj = w · A + (1 − w) · spot
+w    = seconds already inside [close−60, close] / 60
+```
+
+Fire only when `|proj − strike|` clears the measured residual tables. Complete-set arb runs if Up+Down asks plus fees sum to less than $1.
+
+Live is opt-in and refused without a key in `/etc/pulse5m.env`. There is no guaranteed edge.
+
+---
+
+## Coinbase paper bot (legacy)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# or: pip install -e ".[dev]"
+python -m apocalyptbot backtest --synthetic --strategy sma_crossover
 ```
 
-Requires Python 3.9+.
-
-## Quick start
-
-Everything runs through `python -m apocalyptbot` (or the `apocalyptbot` command
-if installed).
-
-**Backtest offline right now — no network needed:**
-
-```bash
-python -m apocalyptbot backtest --synthetic --strategy sma_crossover \
-    --param fast=10 --param slow=30
-```
-
-**Backtest on real recent BTC data:**
-
-```bash
-python -m apocalyptbot backtest --symbol BTC-USD --interval 1h \
-    --strategy rsi --param period=14 --param oversold=30 --param overbought=70
-```
-
-**Download candles to a CSV, then backtest against the file:**
-
-```bash
-python -m apocalyptbot fetch --symbol ETH-USD --interval 1d --out data/eth.csv
-python -m apocalyptbot backtest --csv data/eth.csv --strategy dca \
-    --param every=7 --param amount=50
-```
-
-**Paper trade (simulated money, live prices):**
-
-```bash
-# one cycle and exit (good for testing / cron)
-python -m apocalyptbot paper --strategy sma_crossover --once
-
-# continuous loop, one decision per hour
-python -m apocalyptbot paper --strategy sma_crossover --poll 3600
-```
-
-Sample backtest output:
-
-```
-Backtest: sma_crossover on BTC-USD
-  Bars tested:      270
-  Starting cash:    10,000.00
-  Final equity:     10,842.31
-  Strategy return:  +8.42%
-  Buy & hold:       +11.90%      <- did the strategy beat just holding?
-  Max drawdown:     14.20%
-  Sharpe (rough):   0.71
-  Trades:           8
-  Win rate:         50.0%
-  Fees paid:        63.40
-```
-
-Always read `Strategy return` **against** `Buy & hold`. Beating a rising market
-is much harder than it looks.
-
-## Run it 24/7 on a VPS
-
-Paper trading is only useful if it runs continuously, so there's a full
-deployment kit in [`deploy/`](deploy/README.md):
-
-- **`deploy/bootstrap.sh`** — one command to harden a fresh Ubuntu/Debian VPS
-  (non-root user, UFW firewall, fail2ban, automatic security updates, time
-  sync, swap) and install the bot as a systemd service.
-- **`Dockerfile` + `docker-compose.yml`** — containerized alternative with
-  auto-restart, log rotation, memory cap, and a heartbeat healthcheck.
-- **Monitoring** — a `state/heartbeat` file + `apocalyptbot health` command,
-  plus optional Telegram/Discord/Slack alerts on startup, every fill, and errors.
-
-```bash
-# on the VPS, as root:
-git clone <your-repo-url> /opt/apocalyptbot && cd /opt/apocalyptbot
-./deploy/bootstrap.sh
-nano .env            # pick strategy + add alert tokens
-systemctl start apocalyptbot
-```
-
-See [`deploy/README.md`](deploy/README.md) for the full runbook and security
-checklist. **Run in paper mode for ~2 weeks before considering real money.**
-
-## Strategies
-
-| Name            | Idea                                              | Key params |
-|-----------------|---------------------------------------------------|------------|
-| `dca`           | Buy a fixed amount every N candles                | `every`, `amount` |
-| `sma_crossover` | Long when fast SMA crosses above slow, exit below | `fast`, `slow`, `allocation` |
-| `rsi`           | Buy oversold (RSI low), sell overbought (RSI high)| `period`, `oversold`, `overbought`, `allocation` |
-
-Pass parameters with repeated `--param key=value` flags.
-
-### Writing your own
-
-Subclass `Strategy` and implement `decide()`. It's a pure function — given the
-candles so far and the current portfolio, return a `Decision` (BUY/SELL/HOLD
-plus a size). No broker access, which is what makes it safe to backtest.
-
-```python
-from apocalyptbot.strategies.base import Strategy, Decision
-from apocalyptbot.data import closes
-
-class BuyTheDip(Strategy):
-    name = "buy_the_dip"
-    def decide(self, symbol, candles, portfolio):
-        prices = closes(candles)
-        if len(prices) < 2:
-            return Decision.hold()
-        if prices[-1] < prices[-2] * 0.95:      # down 5% on the bar
-            return Decision.buy(0.25, "bought the dip")
-        return Decision.hold()
-```
-
-Register it in `apocalyptbot/strategies/__init__.py` and it's usable from the CLI.
-
-## How the simulation stays honest
-
-- **No lookahead.** At bar *i* the strategy only sees candles `[0..i]`.
-- **Fees and slippage on every fill**, charged *against* you, so paper results
-  aren't rosier than live.
-- **Marked-to-market equity** at each bar for the drawdown/Sharpe curve.
-
-These are simplifications, not a market simulator — real fills, partial fills,
-latency, and liquidity are not modeled. Treat backtest numbers as a filter for
-bad ideas, not a promise of returns.
-
-## Project layout
-
-```
-apocalyptbot/
-  data.py           # Coinbase client, CSV load/save, synthetic generator
-  indicators.py     # SMA / EMA / RSI / crossovers (pure, dependency-free)
-  portfolio.py      # cash + positions accounting
-  broker.py         # PaperBroker: fees, slippage, fills, realized PnL
-  strategies/       # base interface + dca / sma_crossover / rsi + registry
-  backtest.py       # walk-forward backtester + metrics
-  engine.py         # live/paper poll-decide-execute loop, state persistence
-  cli.py            # `python -m apocalyptbot ...`
-tests/              # pytest suite (offline; no network required)
-```
-
-## Security & going live
-
-- **API keys are never stored in the repo.** Config files carry no secrets;
-  if/when live trading lands, keys are read from `APOCALYPTBOT_API_KEY` /
-  `APOCALYPTBOT_API_SECRET` environment variables only. `.env`, `config.json`,
-  and state files are gitignored.
-- Before any real trading you'd want, at minimum: exchange keys scoped to
-  **trade-only, no withdrawal**, hard position/loss limits, and a long
-  paper-trading run first.
-
-## Roadmap
-
-- [ ] Live broker adapters (Coinbase Advanced Trade, Kraken) behind the same
-      `buy`/`sell` interface the paper broker already uses
-- [ ] Risk controls: stop-loss, take-profit, max position size, daily loss cap
-- [ ] Parameter sweeps / walk-forward optimization
-- [ ] More strategies (grid, Bollinger bands, MACD) and multi-asset portfolios
-- [ ] Equity-curve plotting and an HTML report
-
-## Tests
-
-```bash
-pip install -e ".[dev]"
-pytest
-```
-
-The suite is fully offline (synthetic data), so it runs anywhere.
-
-## Disclaimer
-
-This software is for education and research. It is not financial advice.
-Cryptocurrency trading carries substantial risk of loss. You are solely
-responsible for any use of this code and any money you choose to put at risk.
+See the original docs below the fold in git history if you need the full SMA/RSI/DCA runbook (`deploy/` at repo root).

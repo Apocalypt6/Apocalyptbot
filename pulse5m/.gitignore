@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+data/*.json
+data/*.jsonl
+.env
+*.pyc
+journal.jsonl
+strikes.json
+ROOT_README.md
+ROOT_CURSOR.md

@@ -1,0 +1,54 @@
+Pulse 5M — deploy on a clean Ubuntu VPS
+======================================
+
+0. Clock
+   apt install -y chrony && systemctl enable --now chrony
+   A 2-second clock error is a wrong window.
+
+1. Clone + one command
+   git clone https://github.com/Apocalypt6/Apocalyptbot.git
+   cd Apocalyptbot/pulse5m
+   sudo bash deploy.sh
+   → /opt/pulse5m  +  /etc/pulse5m.env  +  systemd pulse5m (paper)
+
+2. Prove the feeds
+   curl -s localhost:8080/health
+   sudo -u pulse5m /opt/pulse5m/.venv/bin/python /opt/pulse5m/bot.py --check
+   sudo -u pulse5m /opt/pulse5m/.venv/bin/python /opt/pulse5m/bot.py --probe
+   --check must show twapLookback=60 on all four slugs.
+   --probe must print twap+raw for btc, eth, sol, xrp. If only BTC
+   ticks, you still have a filtered subscribe — that bug is already
+   fixed in rtds.py; do not add filters back.
+
+3. Paper for at least a day
+   journalctl -u pulse5m -f
+   tail -f /var/lib/pulse5m/journal.jsonl
+   Health JSON has pnl + per-asset status. No keys in that payload.
+
+4. Live (optional, no guaranteed edge)
+   Edit /etc/pulse5m.env:
+     PULSE_MODE=live
+     POLY_PRIVATE_KEY=0x...
+     POLY_SIGNATURE_TYPE=0|1|2
+     POLY_FUNDER=                 (required for signature_type 1/2)
+   systemctl edit pulse5m        → change --paper to --live
+   systemctl restart pulse5m
+   First live fill: confirm the fee on the receipt equals
+     shares * 0.07 * p * (1-p)
+   If it does not, stop.
+
+5. Docker alternative
+   docker compose up -d --build
+   Same health port. Mount keys only via env, never a file in the image.
+
+6. Do not
+   - Put the private key in the repo, the health JSON, or a browser desk.
+   - Invent a strike from Coinbase / Binance / last trade.
+   - Raise size until the journal has a week of paper settles.
+   - Turn on hybrid mid-window as the only gate. Lock is the edge.
+
+Default ports: 8080/health
+Default mode:  paper
+Assets:        btc,eth,sol,xrp
+Window:        floor(unix/300)*300
+Resolution:    Chainlink 60s TWAP
