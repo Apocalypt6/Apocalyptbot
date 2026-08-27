@@ -1,4 +1,3 @@
-# Apocalyptbot container image — small, non-root, with a heartbeat healthcheck.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -8,12 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Create an unprivileged user to run the bot.
 RUN groupadd --system apocalypt && useradd --system --gid apocalypt --home-dir /app apocalypt
 
-# Install the package first (better layer caching), then copy the rest.
 COPY pyproject.toml requirements.txt README.md ./
 COPY apocalyptbot ./apocalyptbot
+COPY beast.py ./
 RUN pip install --no-cache-dir .
 
 COPY deploy ./deploy
@@ -23,7 +21,6 @@ RUN chmod +x deploy/*.sh \
 
 USER apocalypt
 
-# Fail the healthcheck if the bot hasn't updated its heartbeat recently.
 HEALTHCHECK --interval=5m --timeout=10s --start-period=3m --retries=3 \
     CMD python3 -m apocalyptbot health --heartbeat state/heartbeat --max-age 900 || exit 1
 

@@ -1,198 +1,302 @@
 # Apocalyptbot
 
-A small, honest crypto trading bot. It **paper-trades** (simulated money) and
-**backtests** pluggable strategies against public market data, so you can test
-ideas safely before risking a single real dollar.
+A Polymarket CLOB hunter. Version 0.2.
 
-> **Read this first.** A bot does not "make money" on its own — it automates a
-> strategy you'd otherwise run by hand. Whether it wins or loses comes down to
-> the strategy, and most simple strategies barely beat buy-and-hold after fees.
-> This tool is built to help you *find that out cheaply*, in simulation, rather
-> than learn it with real money. Nothing here is financial advice, and no
-> strategy is guaranteed to be profitable. **Never trade money you can't afford
-> to lose.**
+It is not a crypto candle bot. It does not watch BTC-USD bars, compute RSI,
+or pretend a moving-average crossover is an edge. It reads Polymarket's public
+APIs, scores books, and (if you ask) paper-trades the scores.
 
-## What it does today
+Nothing here is financial advice. Completeness arb is a thin, fragile
+mechanical edge. Endgame, whale-copy, and momentum can lose the whole
+bankroll. Never trade money you cannot afford to lose.
 
-- **Backtesting** — replay a strategy over historical candles with no
-  lookahead, and score it: return, max drawdown, rough Sharpe, trade count,
-  win rate, fees paid, and a **buy-and-hold** comparison.
-- **Paper trading** — run the same strategy live against real prices with
-  simulated cash; state is saved to disk so you can stop and resume.
-- **Public data** — Coinbase's public API (no account or API key needed), plus
-  offline CSV and a deterministic synthetic generator for demos/tests.
-- **Three strategies out of the box** — DCA, SMA crossover, RSI mean-reversion.
+## What it does
 
-It does **not** place real orders yet. Live trading is a deliberate, separate
-step (see [Roadmap](#roadmap)).
+- **scan** — hottest markets by 24h volume (Gamma).
+- **hunt** — completeness (buy YES+NO asks under $1 after fees), merge (sell
+  both bids over $1), wide spreads, late-game extremes, whale tape.
+- **tape** — large prints from the Data API.
+- **whale ADDRESS** — that wallet's positions and recent trades.
+- **market SLUG** — one market, both books, recent tape, hunt scores.
+- **paper** — simulated money against live books. Default strategy:
+  `completeness`.
+- **live** — real CLOB V2 orders. Refused unless you pass
+  `--i-understand-this-risks-real-money` **and** set `POLYMARKET_PRIVATE_KEY`.
+  Needs the optional `py-clob-client-v2` extra. The archived `py-clob-client`
+  will not work.
+- **health** — heartbeat freshness (Docker / systemd probes).
+- **research** — disabled. Paid web search is not on the hunt path.
 
-## Install
+Hunt uses three **free, unauthenticated** hosts:
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-# or: pip install -e ".[dev]"
-```
+| Host | Role |
+|------|------|
+| `https://gamma-api.polymarket.com` | events, markets, slugs |
+| `https://clob.polymarket.com` | order books |
+| `https://data-api.polymarket.com` | trades, positions, holders |
+
+No Polymarket API key is required for scan, hunt, tape, whale, market, paper,
+or health. Do not paste an Exa (or any paid search) key into `.env` thinking
+the bot needs it. It does not. Instant search is about **$7 per 1,000
+queries**. This repo will not spend your $16 free-tier balance.
+
+## What it does not do
+
+It does not print money. Completeness is the only setup with a mechanical
+payout identity (YES + NO = $1 at resolution). It still dies to **taker
+fees**, **latency**, and **size that is gone by the time you send**. Merge
+needs inventory you already hold. Wide books, endgame favorites, and copying
+whales are opinions with extra logging.
+
+CLOB books are **not reliably sorted**. The bot uses `max(bid)` / `min(ask)`
+and sorts locally before walking depth. If you take the first row of a raw
+`/book` payload as "best", you will misread the market.
+
+Collateral on live orders is **pUSD** on **Polygon, chain id 137**.
+
+## Quick start (venv)
 
 Requires Python 3.9+.
 
-## Quick start
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e .
+```
 
-Everything runs through `python -m apocalyptbot` (or the `apocalyptbot` command
-if installed).
-
-**Backtest offline right now — no network needed:**
+Same CLI either way:
 
 ```bash
-python -m apocalyptbot backtest --synthetic --strategy sma_crossover \
-    --param fast=10 --param slow=30
+python -m apocalyptbot scan
+python beast.py hunt --limit 20
 ```
 
-**Backtest on real recent BTC data:**
+If the package is installed, `apocalyptbot` is also on `PATH`.
+
+Dev extras (pytest) and the live CLOB client:
 
 ```bash
-python -m apocalyptbot backtest --symbol BTC-USD --interval 1h \
-    --strategy rsi --param period=14 --param oversold=30 --param overbought=70
+pip install -e ".[dev]"
+pip install -e ".[live]"           # py-clob-client-v2 only; not required for paper
 ```
 
-**Download candles to a CSV, then backtest against the file:**
+Or: `pip install -r requirements.txt` (requests + pytest, no live client).
+
+## Commands
 
 ```bash
-python -m apocalyptbot fetch --symbol ETH-USD --interval 1d --out data/eth.csv
-python -m apocalyptbot backtest --csv data/eth.csv --strategy dca \
-    --param every=7 --param amount=50
+python -m apocalyptbot scan --limit 20
+python -m apocalyptbot hunt --limit 40
+python -m apocalyptbot hunt --watch --poll 30 --limit 40
+python -m apocalyptbot tape --min-usd 2500
+python -m apocalyptbot whale 0xYourProxyWallet
+python -m apocalyptbot market will-the-fed-cut-rates-in-september-2026
+python -m apocalyptbot paper --strategy completeness --cash 1000 --once
+python -m apocalyptbot paper --strategy completeness --poll 30 --state state/portfolio.state.json
+python -m apocalyptbot live --i-understand-this-risks-real-money   # real money
+python -m apocalyptbot health --heartbeat state/heartbeat --max-age 900
+python -m apocalyptbot research "some query"                       # exits refused
 ```
 
-**Paper trade (simulated money, live prices):**
+Useful flags (see `--help` on each subcommand):
 
-```bash
-# one cycle and exit (good for testing / cron)
-python -m apocalyptbot paper --strategy sma_crossover --once
+| Flag | Used by | Default | Meaning |
+|------|---------|---------|---------|
+| `--limit` | scan, hunt, paper | 40 | hot markets to pull |
+| `--min-edge` | hunt, paper | 0.008 | $0.008 / share after fees |
+| `--min-shares` | hunt, paper | 20 | ignore thinner books |
+| `--kinds` | hunt | all | `completeness,merge,wide_spread,endgame,whale` |
+| `--watch` / `--poll` | hunt | off / 30s | loop |
+| `--strategy` | paper, live | `completeness` | see [Strategies](#strategies) |
+| `--param key=value` | paper, live | — | strategy kwargs (`limit=2`) |
+| `--cash` | paper, live | 1000 | starting paper cash (pUSD) |
+| `--max-notional` | paper, live | 50 | per-trade notional cap |
+| `--max-exposure` | paper, live | 500 | inventory cap |
+| `--max-daily-loss` | paper, live | 75 | halt buys after a bad day |
+| `--json` | most read cmds | off | machine-readable |
 
-# continuous loop, one decision per hour
-python -m apocalyptbot paper --strategy sma_crossover --poll 3600
+## Sample output
+
+`python -m apocalyptbot scan --limit 6` (illustrative numbers):
+
+```
+ #  MARKET                                                YES    NO   SPRD  VOL24H     LIQ
+--  ----------------------------------------------------  -----  -----  ----  ------  ------
+ 1  Will the Fed cut rates at the September 2026 FOMC?    0.622  0.381  0.012   $890k   $188k
+ 2  Will Bitcoin close above $100k on August 31?          0.410  0.595  0.018   $412k    $96k
+ 3  Next US presidential election winner: Democratic nom  0.335  0.670  0.021   $301k   $240k
+ 4  Will there be a Ukraine ceasefire by August 31?       0.941  0.062  0.014   $188k    $41k
+ 5  Best Picture winner: The Brutalist                    0.210  0.790  0.061    $74k    $19k
+ 6  ETH above $5,000 by December 31, 2026?                0.448  0.560  0.009    $61k    $33k
+6 markets  ·  free Gamma + CLOB reads
 ```
 
-Sample backtest output:
+`python -m apocalyptbot hunt --limit 40` (illustrative):
 
 ```
-Backtest: sma_crossover on BTC-USD
-  Bars tested:      270
-  Starting cash:    10,000.00
-  Final equity:     10,842.31
-  Strategy return:  +8.42%
-  Buy & hold:       +11.90%      <- did the strategy beat just holding?
-  Max drawdown:     14.20%
-  Sharpe (rough):   0.71
-  Trades:           8
-  Win rate:         50.0%
-  Fees paid:        63.40
+hunted 40 books  ·  5 prints
+#  KIND           MARKET                                      EDGE    SH      $
+-  -------------  ------------------------------------------  ------  --  -----
+1  completeness   Will the Fed cut rates at the September FO  0.82¢   84    $83
+2  merge          Will Bitcoin close above $100k on August    1.18¢   31    $31
+3  endgame        Will there be a Ukraine ceasefire by Augu  44.10¢    5     $5
+4  whale          ETH above $5,000 by December 31, 2026?     52.80¢ 12000 $5,280
+5  wide_spread    Best Picture winner: The Brutalist          6.10¢   50    $14
+
+  1. buy Yes@0.4810 + No@0.5090 = 0.9900  →  $1.00  edge 0.82¢/sh  fees $0.0412
+  2. sell Yes@0.6120 + No@0.4010 = 1.0130  vs $1.00  edge 1.18¢/sh (needs inventory)
+  3. Yes mid 0.941  11.4h left  favorite — this is NOT free money
+  4. 0x4f2a1c… BUY 12000 Yes @ 0.440  ($5,280)
+  5. The Brutalist spread 0.061  bid 0.210 / ask 0.271
 ```
 
-Always read `Strategy return` **against** `Buy & hold`. Beating a rising market
-is much harder than it looks.
+A 0.82¢ completeness print after fees is small. Walk away from any README
+(this one included) that treats that as a business.
 
-## Run it 24/7 on a VPS
+## Completeness, merge, and the rest
 
-Paper trading is only useful if it runs continuously, so there's a full
-deployment kit in [`deploy/`](deploy/README.md):
+**Completeness** — buy YES and NO at the ask so that
+`avg(YES) + avg(NO) + taker fees < $1`. At resolution one side pays $1, the
+other $0. That is the identity. The bot walks both ask ladders in lockstep
+and stops when average edge falls below `--min-edge`.
 
-- **`deploy/bootstrap.sh`** — one command to harden a fresh Ubuntu/Debian VPS
-  (non-root user, UFW firewall, fail2ban, automatic security updates, time
-  sync, swap) and install the bot as a systemd service.
-- **`Dockerfile` + `docker-compose.yml`** — containerized alternative with
-  auto-restart, log rotation, memory cap, and a heartbeat healthcheck.
-- **Monitoring** — a `state/heartbeat` file + `apocalyptbot health` command,
-  plus optional Telegram/Discord/Slack alerts on startup, every fill, and errors.
+**Merge** — the other direction: sell both bids so
+`avg(YES) + avg(NO) - fees > $1`. You must already hold the shares. The risk
+gate will refuse a naked merge.
 
-```bash
-# on the VPS, as root:
-git clone <your-repo-url> /opt/apocalyptbot && cd /opt/apocalyptbot
-./deploy/bootstrap.sh
-nano .env            # pick strategy + add alert tokens
-systemctl start apocalyptbot
+**Wide spread** — a book with a large bid/ask gap. Fade is an opinion that
+someone will fill the hole. Often nobody does.
+
+**Endgame** — a market near its `endDate` trading at an extreme price. Black
+swans live here. A 94¢ favorite with eleven hours left is not "free 6 cents."
+
+**Whale tape** — a large Data API print, surfaced so you can look. Copying it
+is `copy_whale` / `momentum`. Whales are wrong constantly.
+
+Paper and live run the same hunt, then a **strategy** picks among the already
+ranked rows, then a **risk gate** clips size and can refuse the trade.
+
+## Fees
+
+Official taker curve (2026):
+
+```
+fee = shares * fee_rate * p * (1 - p)
 ```
 
-See [`deploy/README.md`](deploy/README.md) for the full runbook and security
-checklist. **Run in paper mode for ~2 weeks before considering real money.**
+Makers are not charged. Geopolitics is fee-free. Gamma's `takerBaseFee`
+integer is not the rate — the bot maps `feeType` to the published category
+rates:
+
+| Category | Rate |
+|----------|------|
+| crypto | 0.07 |
+| sports | 0.05 |
+| finance, politics, tech, mentions | 0.04 |
+| economics, culture, weather | 0.05 |
+| geopolitics | 0.00 |
+
+Fees peak around 50¢ outcomes. A "1¢ completeness" on a 50/50 crypto market
+is often negative after the curve. The hunter subtracts fees before it
+reports edge. It cannot subtract the fill you did not get.
 
 ## Strategies
 
-| Name            | Idea                                              | Key params |
-|-----------------|---------------------------------------------------|------------|
-| `dca`           | Buy a fixed amount every N candles                | `every`, `amount` |
-| `sma_crossover` | Long when fast SMA crosses above slow, exit below | `fast`, `slow`, `allocation` |
-| `rsi`           | Buy oversold (RSI low), sell overbought (RSI high)| `period`, `oversold`, `overbought`, `allocation` |
+| Name | What it takes | Honest note |
+|------|----------------|-------------|
+| `completeness` | `completeness` and `merge` rows | Only mechanical pair trades |
+| `fade` | `wide_spread` | Spread is not a forecast |
+| `endgame` | `endgame` | Can go to zero |
+| `copy_whale` | `whale` | Large ≠ right |
+| `momentum` | `whale` and `endgame` | Gambling with extra steps |
 
-Pass parameters with repeated `--param key=value` flags.
-
-### Writing your own
-
-Subclass `Strategy` and implement `decide()`. It's a pure function — given the
-candles so far and the current portfolio, return a `Decision` (BUY/SELL/HOLD
-plus a size). No broker access, which is what makes it safe to backtest.
-
-```python
-from apocalyptbot.strategies.base import Strategy, Decision
-from apocalyptbot.data import closes
-
-class BuyTheDip(Strategy):
-    name = "buy_the_dip"
-    def decide(self, symbol, candles, portfolio):
-        prices = closes(candles)
-        if len(prices) < 2:
-            return Decision.hold()
-        if prices[-1] < prices[-2] * 0.95:      # down 5% on the bar
-            return Decision.buy(0.25, "bought the dip")
-        return Decision.hold()
+```bash
+python -m apocalyptbot paper --strategy completeness --param limit=2 --once
 ```
 
-Register it in `apocalyptbot/strategies/__init__.py` and it's usable from the CLI.
+## Paper vs live
 
-## How the simulation stays honest
+**Paper** marks fills at the quoted prices, charges the taker curve, and
+writes `state/portfolio.state.json`. There are no partials, no latency, and
+no disappearing size. Treat the equity line as a filter for bad ideas, not a
+promise the CLOB will still be there.
 
-- **No lookahead.** At bar *i* the strategy only sees candles `[0..i]`.
-- **Fees and slippage on every fill**, charged *against* you, so paper results
-  aren't rosier than live.
-- **Marked-to-market equity** at each bar for the drawdown/Sharpe curve.
+**Live** posts GTC orders through `py-clob-client-v2` on CLOB V2 (live as of
+2026). The old `py-clob-client` package is archived and will not work.
 
-These are simplifications, not a market simulator — real fills, partial fills,
-latency, and liquidity are not modeled. Treat backtest numbers as a filter for
-bad ideas, not a promise of returns.
+```bash
+export POLYMARKET_PRIVATE_KEY=0x...
+export POLYMARKET_FUNDER=0x...          # optional; signature type 0 if you sign yourself
+export POLYMARKET_SIGNATURE_TYPE=0
+python -m apocalyptbot live \
+    --i-understand-this-risks-real-money \
+    --strategy completeness \
+    --cash 100 \
+    --max-notional 20 \
+    --once
+```
+
+Without the flag or the key, `live` exits 2 and places nothing.
+`deploy/run.sh` and the systemd unit **refuse** `MODE=live`. Unattended
+deploys are hunt or paper only.
+
+## Research is off
+
+`python -m apocalyptbot research "..."` is a stub. It will not call Exa or
+any other paid search API, even if `EXA_API_KEY` is set. Hunt does not "enrich"
+markets with web search. Leave the key blank. If you later want paid search,
+that is a separate, budgeted decision — not something to hang off `--watch`.
+
+## Configuration
+
+Copy [`.env.example`](.env.example) to `.env`. `deploy/run.sh` (Docker and
+systemd) turns those variables into a `hunt` or `paper` argv. Changing
+`MIN_EDGE` in `.env` only affects the unattended entrypoint; a manual
+`python -m apocalyptbot hunt` still needs `--min-edge` if you want a
+non-default threshold.
+
+Optional Telegram (`APOCALYPTBOT_TELEGRAM_TOKEN` + `_CHAT_ID`) or a Discord /
+Slack incoming webhook (`APOCALYPTBOT_WEBHOOK_URL`) fire on paper/live fills
+and engine errors. If they are empty, notifications are skipped.
+
+## Run it unattended
+
+Paper is only useful if it stays up. The kit in [`deploy/`](deploy/README.md):
+
+- `deploy/bootstrap.sh` — light VPS setup (updates, SSH-only firewall,
+  fail2ban, chrony, venv, systemd). Hunt or paper. Not live.
+- `Dockerfile` + `docker-compose.yml` — non-root `apocalypt` user, 1 GB cap,
+  `restart: unless-stopped`, heartbeat `HEALTHCHECK`.
+- `python -m apocalyptbot health` — stale `state/heartbeat` fails the probe.
+
+```bash
+cp .env.example .env          # MODE=paper for a simulated loop
+docker compose up -d --build
+```
+
+Or, on a VPS: `sudo ./deploy/bootstrap.sh`, edit `.env`, `systemctl start apocalyptbot`.
 
 ## Project layout
 
 ```
 apocalyptbot/
-  data.py           # Coinbase client, CSV load/save, synthetic generator
-  indicators.py     # SMA / EMA / RSI / crossovers (pure, dependency-free)
-  portfolio.py      # cash + positions accounting
-  broker.py         # PaperBroker: fees, slippage, fills, realized PnL
-  strategies/       # base interface + dca / sma_crossover / rsi + registry
-  backtest.py       # walk-forward backtester + metrics
-  engine.py         # live/paper poll-decide-execute loop, state persistence
-  cli.py            # `python -m apocalyptbot ...`
-tests/              # pytest suite (offline; no network required)
+  cli.py           python -m apocalyptbot / beast.py
+  gamma.py         Gamma discovery (no auth)
+  clob.py          CLOB books (no auth)
+  tape.py          Data API prints / positions
+  hunt.py          rank completeness, merge, spreads, endgame, whales
+  books.py         walk both sides; completeness / merge math
+  fees.py          taker curve + category rates
+  models.py        Market, Book, Opportunity, Print
+  engine.py        hunt → strategy → risk → broker → state
+  broker.py        PaperBroker; LiveBroker (opt-in CLOB V2)
+  risk.py          notional / exposure / daily-loss gates
+  portfolio.py     cash + outcome-token inventory (pUSD)
+  research.py      paid search stub — always refused
+  strategies/      completeness, fade, endgame, copy_whale, momentum
+beast.py           thin launcher
+deploy/            VPS + Docker entrypoints
 ```
-
-## Security & going live
-
-- **API keys are never stored in the repo.** Config files carry no secrets;
-  if/when live trading lands, keys are read from `APOCALYPTBOT_API_KEY` /
-  `APOCALYPTBOT_API_SECRET` environment variables only. `.env`, `config.json`,
-  and state files are gitignored.
-- Before any real trading you'd want, at minimum: exchange keys scoped to
-  **trade-only, no withdrawal**, hard position/loss limits, and a long
-  paper-trading run first.
-
-## Roadmap
-
-- [ ] Live broker adapters (Coinbase Advanced Trade, Kraken) behind the same
-      `buy`/`sell` interface the paper broker already uses
-- [ ] Risk controls: stop-loss, take-profit, max position size, daily loss cap
-- [ ] Parameter sweeps / walk-forward optimization
-- [ ] More strategies (grid, Bollinger bands, MACD) and multi-asset portfolios
-- [ ] Equity-curve plotting and an HTML report
 
 ## Tests
 
@@ -201,10 +305,10 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite is fully offline (synthetic data), so it runs anywhere.
-
 ## Disclaimer
 
-This software is for education and research. It is not financial advice.
-Cryptocurrency trading carries substantial risk of loss. You are solely
-responsible for any use of this code and any money you choose to put at risk.
+This software is for education and research. It is not financial advice,
+not an offer to trade, and not a claim that any strategy has a positive
+expectation. Prediction-market trading can wipe a bankroll in a single
+resolution. You are solely responsible for any use of this code and any
+money you choose to put at risk. Never trade money you cannot afford to lose.

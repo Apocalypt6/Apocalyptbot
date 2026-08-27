@@ -1,23 +1,20 @@
-# Running Apocalyptbot 24/7 on a VPS
+# Deploying Apocalyptbot
 
-This guide takes you from a fresh Linux VPS to a hardened box running the bot
-around the clock, following the widely-recommended trading-bot deployment
-checklist (auto-restart, firewall, fail2ban, auto-updates, time sync,
-monitoring). It reflects current best practice — see [Sources](#sources).
+Unattended runs are **hunt** (watch books, place nothing) or **paper**
+(simulated fills on live books). Live CLOB orders are attended-only:
+`deploy/run.sh` exits if `MODE=live`, and the systemd unit must stay pointed
+at that script.
 
-> **Golden rule:** run in **paper mode for at least ~2 weeks** and confirm the
-> logs, restarts, and alerts all behave before you even think about real money.
-> Going live also requires a live broker adapter, which isn't built yet.
+Paper is only informative if it stays up through restarts and a working
+heartbeat. Most people should never run `live`.
 
-There are two supported ways to run it. Pick one.
-
----
+Two ways to run it. Pick one.
 
 ## Option A — systemd (no Docker)
 
-Best if you want the lightest footprint and native journald logs.
+Lightest footprint. Logs go to journald.
 
-**1. Provision + harden the box (as root):**
+**1. As root, on a fresh Ubuntu/Debian VPS:**
 
 ```bash
 git clone <your-repo-url> /opt/apocalyptbot
@@ -25,116 +22,108 @@ cd /opt/apocalyptbot
 ./deploy/bootstrap.sh
 ```
 
-`bootstrap.sh` is idempotent and does all of this for you:
+`bootstrap.sh` is idempotent. It does a small, boring set of things:
 
-| Step | What & why |
-|------|------------|
-| System update + `unattended-upgrades` | Auto-installs security patches — highest-impact, lowest-effort protection |
-| Non-root `apocalypt` user | The bot never runs as root |
-| UFW firewall | Default-deny inbound, only SSH allowed |
-| fail2ban | Bans IPs after repeated failed SSH logins |
-| chrony | Keeps the clock accurate so candle timestamps are correct |
-| 2 GB swap | A memory spike can't OOM-kill the bot |
-| venv + install | Builds `/opt/apocalyptbot/.venv` and installs the package |
-| systemd service | Installs, enables (start-on-boot), but doesn't start yet |
+| Step | Why |
+|------|-----|
+| `apt` packages + `unattended-upgrades` | Security patches without a weekly SSH session |
+| User `apocalypt` | The bot does not run as root |
+| UFW | Default-deny inbound, SSH allowed. Does **not** `ufw reset` |
+| fail2ban | Slows SSH password guessing |
+| chrony | Resolution times and heartbeats need a sane clock |
+| 2 GB swap, only if none exists | A memory spike should not OOM the box |
+| venv + `pip install` | `/opt/apocalyptbot/.venv` |
+| systemd unit | Enabled, **not** started |
+
+It will not disable SSH passwords unless you re-run with `HARDEN_SSH=1`
+**and** an `authorized_keys` file is already present.
+
+If you already cloned the repo somewhere else, you can run
+`sudo ./deploy/bootstrap.sh` from that tree; it copies into
+`APP_DIR` (default `/opt/apocalyptbot`).
 
 **2. Configure and start:**
 
 ```bash
-nano /opt/apocalyptbot/.env        # strategy, symbol, optional Telegram alerts
+nano /opt/apocalyptbot/.env     # MODE=hunt or MODE=paper
 systemctl start apocalyptbot
-journalctl -u apocalyptbot -f      # watch it work
+journalctl -u apocalyptbot -f
 ```
 
-**3. Lock down SSH (recommended).** Make sure your public key is in
-`~/.ssh/authorized_keys`, confirm you can log in with it, then:
+**3. Later updates:**
 
 ```bash
-HARDEN_SSH=1 ./deploy/bootstrap.sh   # disables SSH password login
+sudo ./deploy/deploy.sh         # git pull, pip install, restart
 ```
 
-The script refuses to disable passwords unless a key is present — so it won't
-lock you out.
-
-**Update later:** `sudo ./deploy/deploy.sh` (pulls, reinstalls, restarts).
-
----
+`deploy.sh` refuses to continue if `.env` contains `MODE=live`.
 
 ## Option B — Docker
 
-Best if you like container isolation and easy rollbacks.
-
 ```bash
-# after installing Docker + the compose plugin, and cloning the repo:
-cp .env.example .env && nano .env
+cp .env.example .env && ${EDITOR:-nano} .env
 docker compose up -d --build
 docker compose logs -f
 ```
 
-`docker-compose.yml` sets `restart: unless-stopped` (survives crashes and
-reboots), caps memory at 1 GB, rotates logs, and persists `state/` so the
-portfolio and heartbeat survive restarts. The image ships a `HEALTHCHECK` that
-marks the container unhealthy if the heartbeat goes stale.
+`docker-compose.yml` sets `restart: unless-stopped`, caps memory at 1 GB,
+rotates JSON logs, and bind-mounts `state/`, `logs/`, and `data/` so a
+recreate does not wipe the paper book. The image runs as `apocalypt` and
+probes `python3 -m apocalyptbot health`.
 
-Still run the firewall/fail2ban/auto-update parts of `bootstrap.sh` on the host
-even when using Docker — containers don't harden the box they run on.
+Still run the host-level parts of `bootstrap.sh` (firewall, fail2ban,
+unattended-upgrades) if this VPS is on the public internet. A container
+does not harden the box it sits on.
 
----
+## What `deploy/run.sh` actually starts
 
-## Configuration
+| `MODE` | Command |
+|--------|---------|
+| `hunt` | `hunt --watch --poll $POLL_SECONDS --limit $HUNT_LIMIT` |
+| `paper` | `paper --strategy $STRATEGY --cash $CASH --poll … --state --heartbeat` plus risk caps |
+| `live` | refused (exit 2) |
 
-All behaviour is driven by `.env` (see [`.env.example`](../.env.example)).
-The key knobs:
+`STRATEGY_PARAMS` (space-separated `key=value`) becomes repeated `--param`
+flags on paper.
 
-```ini
-STRATEGY=sma_crossover
-SYMBOL=BTC-USD
-INTERVAL=1h
-STRATEGY_PARAMS=fast=10 slow=30
-POLL_SECONDS=3600
+Hunt `--watch` does not go through the engine, so it does not write
+`state/heartbeat`. `run.sh` keeps a small sidecar timestamp so Docker's
+`HEALTHCHECK` and `apocalyptbot health` stay meaningful. Paper writes the
+file itself each cycle.
+
+## Monitoring
+
+```bash
+# systemd
+journalctl -u apocalyptbot -f
+/opt/apocalyptbot/.venv/bin/python -m apocalyptbot health
+
+# Docker
+docker compose logs -f
+docker compose exec apocalyptbot python3 -m apocalyptbot health
 ```
 
-`deploy/run.sh` turns these into the right `python -m apocalyptbot paper ...`
-command, so both systemd and Docker read the same single source of truth.
+Optional Telegram (`APOCALYPTBOT_TELEGRAM_TOKEN` + `_CHAT_ID`) or a
+Discord/Slack webhook (`APOCALYPTBOT_WEBHOOK_URL`) notify on paper fills
+and engine errors. Empty means silent.
 
-## Monitoring & alerts
+## Checklist (do these; skip the rest of the internet's "hardening" theatre)
 
-- **Heartbeat:** every cycle writes a unix timestamp to `state/heartbeat`.
-  Check freshness anytime:
-  ```bash
-  python -m apocalyptbot health --heartbeat state/heartbeat --max-age 900
-  ```
-  This is also the Docker `HEALTHCHECK` and a good target for an external
-  uptime monitor or a cron alert.
-- **Push alerts:** set `APOCALYPTBOT_TELEGRAM_TOKEN` + `..._CHAT_ID`, or
-  `APOCALYPTBOT_WEBHOOK_URL` (Discord/Slack). You'll get a message on startup,
-  on every fill, and on any error in the loop. If nothing is configured, alerts
-  are silently skipped.
-- **Logs:** `journalctl -u apocalyptbot -f` (systemd) or
-  `docker compose logs -f` (Docker).
+- [ ] `MODE=hunt` or `MODE=paper` in `.env`. Not live.
+- [ ] `.env` is `chmod 600` and not in git (it is gitignored).
+- [ ] SSH key works before you consider `HARDEN_SSH=1`.
+- [ ] UFW is active and still lets you in.
+- [ ] Heartbeat is fresh after a reboot (`systemctl` enable is already on).
+- [ ] If you ever run `live` by hand: trade-only key, no withdrawal, IP pin
+      if the wallet/proxy supports it, amount you can lose.
 
-## Security checklist (do all of these)
+## Live trading is not a deploy target
 
-- [ ] SSH key-only login, root password login disabled (`HARDEN_SSH=1`)
-- [ ] UFW enabled, default-deny inbound (bootstrap does this)
-- [ ] fail2ban running (bootstrap does this)
-- [ ] Automatic security updates on (bootstrap does this)
-- [ ] Bot runs as the non-root `apocalypt` user (service/container default)
-- [ ] `.env` is `chmod 600` and **never committed** (it's gitignored)
-- [ ] When you go live: exchange keys are **trade-only, withdrawals disabled**,
-      and **IP-whitelisted** to this VPS
+CLOB V2 is live (2026). Live orders spend **pUSD** on Polygon 137 via
+`py-clob-client-v2`. The systemd unit and this directory will not start
+that loop. Sit at a terminal, set `POLYMARKET_PRIVATE_KEY`, and pass
+`--i-understand-this-risks-real-money` if you truly mean it. Completeness
+still dies to fees, latency, and size that vanished. Endgame and whale-copy
+can zero the account.
 
-## Before going live (later)
-
-1. Paper-trade the exact strategy + params on the VPS for ~2 weeks.
-2. Verify restart-on-reboot, alerting, and heartbeat all fire.
-3. Add a live broker adapter (roadmap) behind the same `buy`/`sell` interface.
-4. Start with an amount you are 100% willing to lose, with hard risk limits.
-
-## Sources
-
-- [How to Run a Trading Bot 24/7: VPS Setup Guide (2026) — SmartMoneyPath](https://smartmoneypath.io/how-to-run-a-trading-bot-24-7-vps-setup-guide-2026/)
-- [Crypto Trading Bot Docker 2026 Containerization Guide — XCryptoBot](https://xcryptobot.com/blog/crypto-bot-docker-2026-containerization-guide)
-- [VPS Hosting for Trading Bots: Server Setup & Infrastructure Guide — DEV](https://dev.to/vathsaman/vps-hosting-for-trading-botsserver-setup-infrastructure-guide-4n26)
-- [Ubuntu 24.04 VPS Security Hardening Guide — MassiveGRID](https://massivegrid.com/blog/ubuntu-vps-security-hardening-guide/)
-- [VPS Security Hardening Checklist (2026) — USAVPS](https://usavps.com/blog/post/vps-security-audit-checklist-hardening-2026/)
+This is not financial advice.
