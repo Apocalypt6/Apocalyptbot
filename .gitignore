@@ -23,7 +23,7 @@ data/*.csv
 logs/
 *.log
 
-# Secrets — NEVER commit real API keys
+# Secrets — NEVER commit real keys
 .env
 config.json
 secrets.*

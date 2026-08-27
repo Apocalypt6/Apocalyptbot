@@ -1,8 +1,11 @@
-"""Apocalyptbot — a small, honest crypto trading bot.
+"""Apocalyptbot — a Polymarket hunter.
 
-Paper-trades and backtests pluggable strategies against public market data.
-No strategy here is guaranteed to make money; the point is to test ideas
-safely before risking real funds. See the README.
+Scans the CLOB for completeness/merge edge, wide books, late-game
+extremes, and whale tape. Paper-trades by default. Live CLOB orders
+are opt-in and refuse to run without an explicit risk flag.
+
+Nothing here is financial advice. Prediction-market trading can wipe
+a bankroll. Never trade money you cannot afford to lose.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
