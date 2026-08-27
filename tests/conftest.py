@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import pytest
