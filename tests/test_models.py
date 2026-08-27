@@ -29,7 +29,7 @@ def test_maybe_json_empty_and_invalid():
     assert maybe_json("") is None
     assert maybe_json("   ") is None
     assert maybe_json("not-json") == "not-json"
-    assert maybe_json("[bad") == "[bad"]
+    assert maybe_json("[bad") == "[bad"
 
 
 def test_as_float_casts_and_defaults():
