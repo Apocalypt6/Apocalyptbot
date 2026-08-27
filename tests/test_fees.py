@@ -1,7 +1,5 @@
 """Taker-fee curve and category rate mapping."""
 
-import pytest
-
 from apocalyptbot.fees import DEFAULT_FEE_RATE, FEE_RATES, fee_rate_for, taker_fee
 from apocalyptbot.models import Market
 
@@ -52,7 +50,10 @@ def test_fee_rate_unknown_or_blank_defaults_to_five_percent():
     assert fee_rate_for(_market(fee_type="no_such_fees")) == 0.05
     assert fee_rate_for(_market(fee_type="")) == 0.05
     assert fee_rate_for(_market(fee_type=None)) == 0.05
-    assert fee_rate_for(_market(fee_type="  sports_fees  ")) == 0.05
+
+
+def test_fee_rate_strips_fee_type_whitespace():
+    assert fee_rate_for(_market(fee_type="  crypto_fees  ")) == 0.07
 
 
 def test_taker_fee_official_midpoint_examples():
